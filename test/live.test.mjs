@@ -156,12 +156,45 @@ test('采集参数：macOS 屏幕走 avfoundation，且必须挂 -r 压速', asy
   assert.ok(region.includes('crop=1280:720:100:50'), 'avfoundation 没有 -video_size，裁剪走滤镜');
 });
 
+test('采集参数：Linux 屏幕走 x11grab，region 走输入侧偏移', async () => {
+  const L = { platform: 'linux' };
+  const { captureArgs, sourceArgs } = await import('../src/capture.js');
+  const line = captureArgs({
+    source: { kind: 'screen', display: ':1' }, width: 800, height: 450, fps: 12, ...L,
+  }).join(' ');
+  assert.ok(line.includes('-f x11grab'), 'Linux 只有 x11grab');
+  assert.ok(line.includes('-framerate 12'), 'x11grab 的帧率是设备侧参数');
+  assert.ok(line.includes('-i :1.0+0,0'), 'DISPLAY 要补屏号，默认从 0,0 抓');
+  assert.ok(!line.includes('hwdownload'), 'x11grab 的帧在内存里，没有 hwdownload');
+  assert.ok(!line.includes('-r '), 'x11grab 已经按 fps 抓，不用输出侧 -r');
+
+  const region = sourceArgs(
+    { kind: 'screen', display: ':0.0', region: { x: 100, y: 50, w: 1280, h: 720 } }, { fps: 12, ...L },
+  ).join(' ');
+  assert.ok(region.includes('-video_size 1280x720'), '局部抓取走 -video_size');
+  assert.ok(region.includes(':0.0+100,50'), '偏移写在输入 URL 上');
+});
+
+test('采集参数：Linux 没有 DISPLAY 时明确报错，不假装能用', async () => {
+  const { captureArgs } = await import('../src/capture.js');
+  const saved = process.env.DISPLAY;
+  delete process.env.DISPLAY;
+  try {
+    assert.throws(
+      () => captureArgs({ source: { kind: 'screen' }, width: 800, height: 450, fps: 12, platform: 'linux' }),
+      /需要 \$DISPLAY/,
+    );
+  } finally {
+    if (saved !== undefined) process.env.DISPLAY = saved;
+  }
+});
+
 test('采集参数：其它平台明确报错，不假装能用', async () => {
   const { pickScreenEngine, resetScreenEngineCache } = await import('../src/capture.js');
   resetScreenEngineCache();
   await assert.rejects(
-    pickScreenEngine({ platform: 'linux', ffmpegPath: 'true' }),
-    /屏幕采集还没接 linux/,
+    pickScreenEngine({ platform: 'freebsd', ffmpegPath: 'true' }),
+    /屏幕采集还没接 freebsd/,
   );
 });
 

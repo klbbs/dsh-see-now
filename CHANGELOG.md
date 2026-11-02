@@ -2,6 +2,18 @@
 
 本文件从 `0.0.4` 起记录；更早的版本见 GitHub Releases。
 
+## [Unreleased]
+
+### Added — `x11grab` 屏幕源（Linux）
+
+- 屏幕：`-f x11grab -framerate 12 -draw_mouse 0 -i :0.0+0,0`。`-framerate` 是设备侧采样率，
+  x11grab 认它当节流阀，所以输出侧不再挂 `-r`（和 gdigrab 同一类，不是 avfoundation 那种要压速的）。
+- 局部裁剪：偏移写在输入 URL 上（`:0.0+100,50`）+ `-video_size 1280x720`，不用 `crop` 滤镜。
+- `$DISPLAY` 缺失时直接报错并说明 Wayland 要走 XWayland，而不是把
+  `Cannot open display :0.0, error 1` 原样抛给用户。
+- `pickScreenEngine()` 新增 Linux 分支：探一次 x11grab，拿不到帧就给 `X11_HINT`（xhost / XWayland）。
+- `isDda()` 从"非 macOS 都当 ddagrab"改成"只有 win32 才是"，否则 Linux 上会白挂一次 `hwdownload`。
+
 ## [0.0.6] - 2026-11-02
 
 > 主题：**macOS 能用**（avfoundation 移植），外加 issue #1 / #2 / #3 一起收掉。

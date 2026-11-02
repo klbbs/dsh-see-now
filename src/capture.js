@@ -36,8 +36,8 @@
 
 import { spawn } from 'node:child_process';
 
-/** 屏幕采集引擎。macOS 只有 avfoundation；Windows 走 ddagrab/gdigrab。 */
-export const ENGINES = Object.freeze(['auto', 'ddagrab', 'gdigrab', 'avfoundation']);
+/** 屏幕采集引擎。macOS 只有 avfoundation；Windows 走 ddagrab/gdigrab；Linux 走 x11grab。 */
+export const ENGINES = Object.freeze(['auto', 'ddagrab', 'gdigrab', 'avfoundation', 'x11grab']);
 
 /** macOS 上屏幕设备的默认名字。`-list_devices` 里它永远是英文，相机才是本地化的。 */
 export const DEFAULT_SCREEN_DEVICE = 'Capture screen 0';
@@ -48,6 +48,10 @@ export const DEFAULT_SCREEN_DEVICE = 'Capture screen 0';
  */
 export const SCREEN_PERMISSION_HINT =
   'ffmpeg 没有「屏幕录制」权限：系统设置 → 隐私与安全性 → 屏幕录制，勾上跑 DSH 的那个 App（或终端），重启它再试。';
+
+/** Linux 上 x11grab 拿不到画面时的提示语（没 DISPLAY / 纯 Wayland / xhost 拒绝）。 */
+export const X11_HINT =
+  'x11grab 拿不到画面：确认 $DISPLAY 指向真实 X 会话（Wayland 下靠 XWayland），或者用 `xhost +SI:localuser:$(whoami)` 放行。';
 
 /** 源描述 → 输入参数。纯函数，可单测。 */
 export function sourceArgs(
@@ -84,6 +88,19 @@ export function sourceArgs(
           '-capture_cursor', s.mouse ? '1' : '0',
           '-i', `${s.device ?? DEFAULT_SCREEN_DEVICE}:none`];
       }
+      if (platform === 'linux' || engine === 'x11grab' || s.engine === 'x11grab') {
+        // x11grab：抓 X 显示。region 走输入侧的 `+x,y` 加 `-video_size`，不用 crop 滤镜。
+        // `-framerate` 是设备侧采样率，x11grab 认它当节流阀，输出侧不用再挂 `-r`。
+        const disp = normalizeDisplay(s.display ?? process.env.DISPLAY);
+        if (!disp) {
+          throw new RangeError('Linux 屏幕采集需要 $DISPLAY（纯 Wayland 请走 XWayland，或等 PipeWire 支持）');
+        }
+        return ['-f', 'x11grab', '-framerate', String(fps),
+          '-draw_mouse', s.mouse ? '1' : '0',
+          ...(s.region
+            ? ['-video_size', `${s.region.w}x${s.region.h}`, '-i', `${disp}+${s.region.x},${s.region.y}`]
+            : ['-i', `${disp}+0,0`])];
+      }
       const useDda = s.engine === 'ddagrab' || (s.engine !== 'gdigrab' && engine !== 'gdigrab');
       if (!useDda) {
         // gdigrab 的 -framerate 是**设备侧**采样率，必须给，否则默认 29.97 白解码
@@ -112,8 +129,16 @@ function isDda(source, engine, platform = process.platform) {
   if (source?.kind !== 'screen') return false;
   const e = source?.engine ?? engine;
   if (e === 'ddagrab') return true;
-  // `auto` 在 Windows 上默认就是 ddagrab；macOS 上它不是候选，别给它套 hwdownload
-  return e === 'auto' && platform !== 'darwin';
+  // `auto` 只在 Windows 上默认是 ddagrab；macOS / Linux 上它不是候选，别给它套 hwdownload
+  return e === 'auto' && platform === 'win32';
+}
+
+/** `:1` → `:1.0`；已经是 `:1.0` 或带主机名的写法就原样返回。 */
+function normalizeDisplay(d) {
+  if (!d) return null;
+  const s = String(d).trim();
+  if (!s) return null;
+  return /:\d+$/.test(s) ? `${s}.0` : s;
 }
 
 /**
@@ -264,12 +289,30 @@ export function pickScreenEngine({
 } = {}) {
   if (cachedEngine) return Promise.resolve(cachedEngine);
   if (platform === 'darwin') return probeAvfoundation({ ffmpegPath, fps, timeoutMs });
+  if (platform === 'linux') return probeX11grab({ ffmpegPath, fps, timeoutMs });
   if (platform !== 'win32') {
     return Promise.reject(new RangeError(
-      `屏幕采集还没接 ${platform}：Windows 走 ddagrab/gdigrab，macOS 走 avfoundation，Linux 需要 x11grab 或 PipeWire，还没做。`,
+      `屏幕采集还没接 ${platform}：Windows 走 ddagrab/gdigrab，macOS 走 avfoundation，Linux 走 x11grab。`,
     ));
   }
   return probeDdagrab({ ffmpegPath, fps, timeoutMs });
+}
+
+/**
+ * Linux：探一次 x11grab。没有备选引擎，探针主要用来回答"屏幕抓不到是因为没 DISPLAY"，
+ * 顺便把 DISPLAY/XWayland 的问题翻译成一句人话，而不是让 ffmpeg 的
+ * `Cannot open display :0.0, error 1` 直接砸到用户脸上。
+ */
+async function probeX11grab({ ffmpegPath, fps, timeoutMs }) {
+  const W = 64;
+  const H = 36;
+  const shot = await grabOneFrame({
+    ffmpegPath, fps, width: W, height: H, timeoutMs, engine: 'x11grab', platform: 'linux',
+  });
+  cachedEngine = 'x11grab';
+  cachedFormat = '';
+  screenWarning = shot.got ? null : X11_HINT;
+  return 'x11grab';
 }
 
 /** macOS：探一次 avfoundation，同时判黑屏（= 没权限）。 */
@@ -304,10 +347,13 @@ async function probeAvfoundation({ ffmpegPath, fps, timeoutMs }) {
 }
 
 /** 单帧探针。拿到满一帧就提前 resolve，不等 close。 */
-function grabOneFrame({ ffmpegPath, fps, width, height, pixelFormat, timeoutMs }) {
+function grabOneFrame({
+  ffmpegPath, fps, width, height, pixelFormat, timeoutMs,
+  engine = 'avfoundation', platform = process.platform,
+}) {
   const args = captureArgs({
-    source: { kind: 'screen', engine: 'avfoundation', pixelFormat: pixelFormat ?? '' },
-    width, height, fps, ffmpegPath, engine: 'avfoundation',
+    source: { kind: 'screen', engine, pixelFormat: pixelFormat ?? '' },
+    width, height, fps, ffmpegPath, engine, platform,
   }).slice(1);
   args.splice(args.length - 1, 0, '-frames:v', '1');
   const need = width * height * 3;

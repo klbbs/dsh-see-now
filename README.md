@@ -120,7 +120,7 @@ node scripts/install-dev.mjs      # 拷进本机 DSH 的 desktop profile
 |---|---|---|
 | Windows | `ddagrab`，不行退 `gdigrab`（自动探测） | 无 |
 | macOS | `avfoundation` | 系统设置 → 隐私与安全性 → **屏幕录制**，勾上跑 DSH 的 App |
-| Linux | — | 还没接（要补 `x11grab` / PipeWire） |
+| Linux | `x11grab`（X11 / XWayland） | 需要 `$DISPLAY`；纯 Wayland 请用 XWayland，PipeWire 还没接 |
 
 ffmpeg 不用进 PATH：插件会按 `DSH_FFMPEG_PATH` / `FFMPEG_PATH` / `DSH_FFMPEG_DIR` /
 `~/.dsh/tools/ffmpeg/bin` / `~/.dsh/bin` 的顺序自己找（DSH 桌面版把 ffmpeg 装在第四个位置）。
